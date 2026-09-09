@@ -1,0 +1,11 @@
+entity Student {
+  name String required
+}
+
+entity Course {
+  name String required
+}
+
+relationship ManyToMany {
+  Student{courses(name)} to Course{students(name)}
+}
