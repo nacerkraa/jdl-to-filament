@@ -18,24 +18,21 @@ class MigrationGenerator
     public function generate(array $entities): array
     {
         $ordered = $this->orderByDependency($entities);
-
         $files = [];
         $baseTimestamp = new \DateTime;
 
         foreach ($ordered as $index => $entity) {
             $timestamp = (clone $baseTimestamp)->modify("+{$index} seconds")->format('Y_m_d_His');
             $table = $this->tableName($entity->name);
-            $filename = "{$timestamp}_create_{$table}_table.php";
-
             $files[] = [
-                'filename' => $filename,
+                'filename' => "{$timestamp}_create_{$table}_table.php",
                 'table' => $table,
                 'content' => $this->buildMigrationContent($entity, $table),
             ];
         }
 
-        // Pivot migrations must come after all entity tables have been
-        // created, so both foreign keys can safely reference their targets.
+        // Pivot migrations come after all entity tables so both foreign keys
+        // can safely reference their target tables.
         $pivotIndex = count($files);
         $generatedPivots = [];
 
@@ -59,14 +56,11 @@ class MigrationGenerator
                 }
 
                 $timestamp = (clone $baseTimestamp)->modify("+{$pivotIndex} seconds")->format('Y_m_d_His');
-                $filename = "{$timestamp}_create_{$pivotTable}_table.php";
-
                 $files[] = [
-                    'filename' => $filename,
+                    'filename' => "{$timestamp}_create_{$pivotTable}_table.php",
                     'table' => $pivotTable,
                     'content' => $this->buildPivotMigrationContent($entity, $targetEntity, $pivotTable),
                 ];
-
                 $generatedPivots[$pivotTable] = true;
                 $pivotIndex++;
             }
@@ -85,14 +79,7 @@ class MigrationGenerator
         return Naming::columnName($fieldName);
     }
 
-    /**
-     * Orders entities so a ManyToOne/OneToOne target is migrated before
-     * the entity that references it (simple depth-first topological sort).
-     * ManyToMany pivot tables are generated separately after all entities.
-     *
-     * @param  Entity[]  $entities
-     * @return Entity[]
-     */
+    /** @param Entity[] $entities */
     protected function orderByDependency(array $entities): array
     {
         $byName = [];
@@ -129,6 +116,7 @@ class MigrationGenerator
         return $ordered;
     }
 
+    /** @param Entity[] $entities */
     protected function findEntity(array $entities, string $name): ?Entity
     {
         foreach ($entities as $entity) {
@@ -158,7 +146,6 @@ class MigrationGenerator
         }
 
         $lines[] = '$table->timestamps();';
-
         $indented = implode("\n", array_map(fn ($l) => "            {$l}", $lines));
 
         return <<<PHP
@@ -190,8 +177,8 @@ PHP;
     {
         $sourceTable = $this->tableName($source->name);
         $targetTable = $this->tableName($target->name);
-        $sourceKey = $this->pivotForeignKey($source->name);
-        $targetKey = $this->pivotForeignKey($target->name);
+        $sourceKey = Naming::pivotForeignKey($source->name);
+        $targetKey = Naming::pivotForeignKey($target->name);
 
         return <<<PHP
 <?php
@@ -218,10 +205,5 @@ return new class extends Migration
 };
 
 PHP;
-    }
-
-    protected function pivotForeignKey(string $entityName): string
-    {
-        return Naming::foreignKeyColumn(Str::singular(Str::snake($entityName)));
     }
 }
