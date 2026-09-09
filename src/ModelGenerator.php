@@ -2,7 +2,6 @@
 
 namespace Nacer\JdlToFilament;
 
-use Illuminate\Support\Str;
 use Nacer\JdlToFilament\Models\Entity;
 use Nacer\JdlToFilament\Models\Relationship;
 
@@ -47,7 +46,7 @@ class ModelGenerator
         }
 
         foreach ($entity->relationships as $relationship) {
-            $built = $this->buildRelationshipMethod($relationship);
+            $built = $this->buildRelationshipMethod($entity, $relationship);
             if ($built === null) {
                 continue;
             }
@@ -72,7 +71,7 @@ class ModelGenerator
     }
 
     /** @return array{method: string, returnType: string}|null */
-    protected function buildRelationshipMethod(Relationship $relationship): ?array
+    protected function buildRelationshipMethod(Entity $owner, Relationship $relationship): ?array
     {
         $targetClass = ucfirst($relationship->targetEntity);
 
@@ -87,7 +86,7 @@ class ModelGenerator
             ],
             Relationship::MANY_TO_MANY => [
                 'returnType' => 'BelongsToMany',
-                'method' => $this->belongsToManyMethod($relationship, $targetClass),
+                'method' => $this->belongsToManyMethod($owner, $relationship, $targetClass),
             ],
             default => null,
         };
@@ -120,10 +119,10 @@ PHP;
 PHP;
     }
 
-    protected function belongsToManyMethod(Relationship $relationship, string $targetClass): string
+    protected function belongsToManyMethod(Entity $owner, Relationship $relationship, string $targetClass): string
     {
         $methodName = $relationship->relationshipName;
-        $pivotTable = Naming::pivotTableName($this->currentEntityName ?? $targetClass, $relationship->targetEntity);
+        $pivotTable = Naming::pivotTableName($owner->name, $relationship->targetEntity);
 
         return <<<PHP
     public function {$methodName}(): BelongsToMany
@@ -148,13 +147,6 @@ PHP;
         array $targetClasses,
         array $relationReturnTypes,
     ): string {
-        // Kept as a property only while rendering relationship methods so
-        // each relationship can use the owning entity for pivot naming.
-        $this->currentEntityName = $className;
-
-        // Rebuild relationship methods now that the owner name is known.
-        // This is done in buildModelContent in normal operation; the property
-        // is reset after rendering to avoid leaking state between entities.
         $fillable = array_values(array_unique($fillable));
         $fillableLines = implode("\n", array_map(fn ($c) => "        '{$c}',", $fillable));
 
@@ -184,7 +176,6 @@ PHP;
         }
 
         $methodsBlock = empty($relationMethods) ? '' : "\n\n".implode("\n\n", $relationMethods);
-        $this->currentEntityName = null;
 
         return <<<PHP
 <?php
@@ -205,6 +196,4 @@ class {$className} extends Model
 
 PHP;
     }
-
-    protected ?string $currentEntityName = null;
 }
