@@ -1,0 +1,9 @@
+{
+  "name": "jdl-parser-bridge",
+  "version": "1.0.0",
+  "description": "Thin Node bridge that parses a JDL file and prints JSON to stdout, for the PHP JdlParser to consume.",
+  "main": "parse.js",
+  "dependencies": {
+    "jhipster-core": "^7.3.4"
+  }
+}

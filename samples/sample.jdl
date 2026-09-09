@@ -1,0 +1,13 @@
+entity Product {
+  name String required,
+  price BigDecimal required,
+  inStock Boolean
+}
+
+entity Category {
+  name String required
+}
+
+relationship ManyToOne {
+  Product{category} to Category
+}

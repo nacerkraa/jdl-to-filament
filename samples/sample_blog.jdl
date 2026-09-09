@@ -1,0 +1,12 @@
+entity Author {
+  name String required
+}
+
+entity Post {
+  title String required,
+  content TextBlob
+}
+
+relationship OneToMany {
+  Author{posts} to Post{author}
+}
