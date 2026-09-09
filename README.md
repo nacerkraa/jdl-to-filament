@@ -107,7 +107,7 @@ jdl-to-filament/
 │   ├── JdlToFilamentServiceProvider.php
 │   ├── JdlParser.php                # PHP wrapper around node/parse.js
 │   ├── EntityMapper.php             # raw JDL JSON -> Entity[] objects
-│   ├── Naming.php                   # shared table/column/FK naming rules
+│   ├── Naming.php                   # shared table/column/FK/pivot naming rules
 │   ├── TypeMapper.php               # JDL field type -> migration column + Eloquent cast + Filament component
 │   ├── MigrationGenerator.php
 │   ├── ModelGenerator.php
@@ -123,9 +123,10 @@ jdl-to-filament/
 │       ├── GenerateFilamentResourcesCommand.php  # jdl:filament
 │       └── InstallNodeCommand.php            # jdl:install-node
 └── samples/
-    ├── sample.jdl        # Product/Category, ManyToOne (one-directional)
-    ├── sample_enum.jdl   # Order with an enum field
-    └── sample_blog.jdl   # Author/Post, bidirectional OneToMany <-> ManyToOne
+    ├── sample.jdl
+    ├── sample_enum.jdl
+    ├── sample_blog.jdl
+    └── sample_many_to_many.jdl # Student/Course ManyToMany example
 ```
 
 ## What's implemented
@@ -141,21 +142,71 @@ jdl-to-filament/
   that auto-picks the target entity's first `String` field as the label
 - `OneToMany` relationships → `hasMany()` on the model, correctly
   resolving the foreign key from the *other* side's relationship name
-  (not a naming guess) - verified against a real bidirectional JDL file
+- **`ManyToMany` relationships** → deterministic pivot-table migration,
+  foreign keys with cascade delete, composite primary key,
+  `belongsToMany()` on Eloquent models, and a Filament multiple searchable
+  relationship `Select`
 - Dependency-ordered migrations (a referenced table always migrates
-  before the table referencing it)
+  before the table referencing it; ManyToMany pivots are generated after
+  all entity tables)
 - JDL's camelCase → Laravel's snake_case for every column/field name
 - Full Filament v5 syntax: `Schema`/`->components()`,
   `recordActions()`/`toolbarActions()`, the unified `Filament\Actions`
   namespace, `\BackedEnum|string|null $navigationIcon`
 
+## ManyToMany example
+
+Input:
+
+```jdl
+entity Student {
+  name String required
+}
+
+entity Course {
+  name String required
+}
+
+relationship ManyToMany {
+  Student{courses(name)} to Course{students(name)}
+}
+```
+
+This generates entity migrations plus a pivot migration similar to:
+
+```php
+Schema::create('course_student', function (Blueprint $table) {
+    $table->foreignId('student_id')->constrained('students')->cascadeOnDelete();
+    $table->foreignId('course_id')->constrained('courses')->cascadeOnDelete();
+    $table->primary(['student_id', 'course_id']);
+});
+```
+
+The models get:
+
+```php
+public function courses(): BelongsToMany
+{
+    return $this->belongsToMany(Course::class, 'course_student');
+}
+```
+
+and the Filament resource gets a multiple relationship-aware Select:
+
+```php
+Select::make('courses')
+    ->relationship('courses', 'name')
+    ->multiple()
+    ->searchable()
+    ->preload()
+```
+
+A sample input is available at `samples/sample_many_to_many.jdl`.
+
 ## Known limitations - not yet handled
 
 These are open issues, good places to contribute:
 
-- **`ManyToMany` relationships** don't generate anything anywhere in the
-  pipeline (no pivot migration, no `belongsToMany()`, no Filament
-  multi-select field)
 - **No RelationManagers** for `OneToMany` sides - e.g. an Author's edit
   page has no "Posts" tab. The `hasMany()` method exists on the model,
   but nothing in the Filament resource surfaces it yet
@@ -168,11 +219,7 @@ These are open issues, good places to contribute:
   remove that footgun
 - **No automated test suite ships with the package.** Every generator
   has been manually verified against the sample `.jdl` files during
-  development (see "How this was built" below for what was actually
-  checked), but none of that is committed as a runnable test suite yet -
-  needed before this is trustworthy for outside contributors
-- **No `LICENSE` or `CONTRIBUTING.md` yet** - planned before this goes
-  public on GitHub
+  development, but none of that is committed as a runnable test suite yet
 - **Decimal precision is hardcoded** to `(10, 2)` everywhere
 - **Foreign keys are always nullable** - JDL's relationship-level
   `required` flag isn't captured yet
@@ -191,16 +238,10 @@ input before moving to the next - not just written and assumed correct:
    fresh scratch directory.
 2. **Internal model** - `Entity`/`Field`/`Relationship` objects, decoupling
    every later generator from JDL's raw JSON shape.
-3. **Migration generator** - dependency-ordered `Schema::create()` files.
-   Testing a `TextBlob` field here surfaced a bug in the original type
-   map: JDL doesn't export `TextBlob` as a distinct type string at all,
-   it's `fieldType: "byte[]"` with a separate discriminator. Fixed by
-   capturing that discriminator on `Field`.
-4. **Model generator** - `$fillable`, `$casts`, `belongsTo()`/`hasMany()`.
-   The trickiest part: resolving the correct foreign key for `hasMany()`
-   from the *other* side's relationship name, verified against a real
-   bidirectional JDL file (`sample_blog.jdl`) rather than assumed correct
-   from a one-directional example.
+3. **Migration generator** - dependency-ordered `Schema::create()` files,
+   with ManyToMany pivot migrations generated after entity tables.
+4. **Model generator** - `$fillable`, `$casts`, `belongsTo()`/`hasMany()`/
+   `belongsToMany()`.
 5. **Filament resource generator** - originally built for Filament v3,
    then updated to v5's actual API (`Schema`, `recordActions()`,
    `toolbarActions()`, the unified `Actions` namespace) after confirming
