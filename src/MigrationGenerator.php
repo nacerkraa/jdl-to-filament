@@ -18,51 +18,52 @@ class MigrationGenerator
     public function generate(array $entities): array
     {
         $ordered = $this->orderByDependency($entities);
+
         $files = [];
         $baseTimestamp = new \DateTime;
+        $index = 0;
 
-        foreach ($ordered as $index => $entity) {
+        foreach ($ordered as $entity) {
             $timestamp = (clone $baseTimestamp)->modify("+{$index} seconds")->format('Y_m_d_His');
+            $index++;
             $table = $this->tableName($entity->name);
+            $filename = "{$timestamp}_create_{$table}_table.php";
+
             $files[] = [
-                'filename' => "{$timestamp}_create_{$table}_table.php",
+                'filename' => $filename,
                 'table' => $table,
                 'content' => $this->buildMigrationContent($entity, $table),
             ];
         }
 
-        // Pivot migrations come after all entity tables so both foreign keys
-        // can safely reference their target tables.
-        $pivotIndex = count($files);
-        $generatedPivots = [];
+        // Pivot tables reference two entity tables via foreign keys, so
+        // they must migrate after ALL entity tables exist. ManyToMany is
+        // exported symmetrically by JDL (both sides get a relationship
+        // entry), so dedupe by the pivot table name itself rather than
+        // by which side "owns" it.
+        $seenPivots = [];
 
-        foreach ($entities as $entity) {
+        foreach ($ordered as $entity) {
             foreach ($entity->relationships as $relationship) {
                 if ($relationship->type !== Relationship::MANY_TO_MANY) {
                     continue;
                 }
 
-                $targetEntity = $this->findEntity($entities, $relationship->targetEntity);
-                if ($targetEntity === null) {
-                    throw new \InvalidArgumentException(
-                        "ManyToMany relationship '{$entity->name}.{$relationship->relationshipName}' " .
-                        "references unknown entity '{$relationship->targetEntity}'."
-                    );
-                }
+                $pivotTable = Naming::pivotTableName($entity->name, $relationship->targetEntity);
 
-                $pivotTable = Naming::pivotTableName($entity->name, $targetEntity->name);
-                if (isset($generatedPivots[$pivotTable])) {
+                if (isset($seenPivots[$pivotTable])) {
                     continue;
                 }
+                $seenPivots[$pivotTable] = true;
 
-                $timestamp = (clone $baseTimestamp)->modify("+{$pivotIndex} seconds")->format('Y_m_d_His');
+                $timestamp = (clone $baseTimestamp)->modify("+{$index} seconds")->format('Y_m_d_His');
+                $index++;
+
                 $files[] = [
                     'filename' => "{$timestamp}_create_{$pivotTable}_table.php",
                     'table' => $pivotTable,
-                    'content' => $this->buildPivotMigrationContent($entity, $targetEntity, $pivotTable),
+                    'content' => $this->buildPivotMigrationContent($entity->name, $relationship->targetEntity, $pivotTable),
                 ];
-                $generatedPivots[$pivotTable] = true;
-                $pivotIndex++;
             }
         }
 
@@ -79,7 +80,17 @@ class MigrationGenerator
         return Naming::columnName($fieldName);
     }
 
-    /** @param Entity[] $entities */
+    /**
+     * Orders entities so a ManyToOne/OneToOne target is migrated before
+     * the entity that references it (simple depth-first topological
+     * sort). Falls back gracefully on a cycle instead of throwing -
+     * a JDL model with a relationship cycle is still valid; the
+     * resulting migration order just won't be perfectly clean, which
+     * is a refinement for later rather than a reason to fail here.
+     *
+     * @param  Entity[]  $entities
+     * @return Entity[]
+     */
     protected function orderByDependency(array $entities): array
     {
         $byName = [];
@@ -116,18 +127,6 @@ class MigrationGenerator
         return $ordered;
     }
 
-    /** @param Entity[] $entities */
-    protected function findEntity(array $entities, string $name): ?Entity
-    {
-        foreach ($entities as $entity) {
-            if (strcasecmp($entity->name, $name) === 0) {
-                return $entity;
-            }
-        }
-
-        return null;
-    }
-
     protected function buildMigrationContent(Entity $entity, string $table): string
     {
         $lines = ["\$table->id();"];
@@ -143,9 +142,14 @@ class MigrationGenerator
                 $unique = $relationship->type === Relationship::ONE_TO_ONE ? '->unique()' : '';
                 $lines[] = "\$table->foreignId('{$fkColumn}')->nullable()->constrained('{$targetTable}'){$unique};";
             }
+            // OneToMany is the inverse side - no column belongs on this table.
+            // ManyToMany gets its own separate pivot-table migration,
+            // built in generate() / buildPivotMigrationContent() below -
+            // no column belongs on this entity's own table for it either.
         }
 
         $lines[] = '$table->timestamps();';
+
         $indented = implode("\n", array_map(fn ($l) => "            {$l}", $lines));
 
         return <<<PHP
@@ -173,12 +177,19 @@ return new class extends Migration
 PHP;
     }
 
-    protected function buildPivotMigrationContent(Entity $source, Entity $target, string $pivotTable): string
+    /**
+     * Builds a pivot table migration for a ManyToMany relationship
+     * between two entities - just the two foreign keys and a composite
+     * primary key. No id() column and no timestamps() by default, matching
+     * a typical hand-written Laravel pivot table; add ->timestamps() and/or
+     * extra withPivot() columns yourself if the relationship needs them.
+     */
+    protected function buildPivotMigrationContent(string $entityA, string $entityB, string $pivotTable): string
     {
-        $sourceTable = $this->tableName($source->name);
-        $targetTable = $this->tableName($target->name);
-        $sourceKey = Naming::pivotForeignKey($source->name);
-        $targetKey = Naming::pivotForeignKey($target->name);
+        $colA = Naming::pivotForeignKey($entityA);
+        $colB = Naming::pivotForeignKey($entityB);
+        $tableA = $this->tableName($entityA);
+        $tableB = $this->tableName($entityB);
 
         return <<<PHP
 <?php
@@ -192,9 +203,9 @@ return new class extends Migration
     public function up(): void
     {
         Schema::create('{$pivotTable}', function (Blueprint \$table) {
-            \$table->foreignId('{$sourceKey}')->constrained('{$sourceTable}')->cascadeOnDelete();
-            \$table->foreignId('{$targetKey}')->constrained('{$targetTable}')->cascadeOnDelete();
-            \$table->primary(['{$sourceKey}', '{$targetKey}']);
+            \$table->foreignId('{$colA}')->constrained('{$tableA}')->cascadeOnDelete();
+            \$table->foreignId('{$colB}')->constrained('{$tableB}')->cascadeOnDelete();
+            \$table->primary(['{$colA}', '{$colB}']);
         });
     }
 

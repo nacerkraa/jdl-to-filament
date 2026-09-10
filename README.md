@@ -72,6 +72,18 @@ php artisan vendor:publish --tag=jdl-to-filament-config
 
 ## Usage
 
+**One command, the whole pipeline:**
+```bash
+php artisan jdl:scaffold schema.jdl
+```
+Runs, in order: generate models → generate migrations → `php artisan migrate`
+→ generate Filament resources. The JDL file is parsed once and reused
+across all three generators. Use `--skip-migrate` to generate all the
+files without actually touching the database, and `--models-path=`,
+`--migrations-path=`, `--filament-path=` to override any of the three
+output locations for that run.
+
+**Or run each step yourself, if you want to inspect/adjust in between:**
 ```bash
 php artisan jdl:generate schema.jdl              # inspect parsed/mapped entities (no files written)
 php artisan jdl:migrations schema.jdl [--dry]    # generate migrations
@@ -121,12 +133,13 @@ jdl-to-filament/
 │       ├── GenerateMigrationsCommand.php     # jdl:migrations
 │       ├── GenerateModelsCommand.php         # jdl:models
 │       ├── GenerateFilamentResourcesCommand.php  # jdl:filament
-│       └── InstallNodeCommand.php            # jdl:install-node
+│       ├── InstallNodeCommand.php            # jdl:install-node
+│       └── ScaffoldCommand.php               # jdl:scaffold - runs all four in sequence
 └── samples/
-    ├── sample.jdl
-    ├── sample_enum.jdl
-    ├── sample_blog.jdl
-    └── sample_many_to_many.jdl # Student/Course ManyToMany example
+    ├── sample.jdl        # Product/Category, ManyToOne (one-directional)
+    ├── sample_enum.jdl   # Order with an enum field
+    ├── sample_blog.jdl   # Author/Post, bidirectional OneToMany <-> ManyToOne
+    └── sample_tags.jdl   # Post/Tag, ManyToMany
 ```
 
 ## What's implemented
@@ -142,66 +155,23 @@ jdl-to-filament/
   that auto-picks the target entity's first `String` field as the label
 - `OneToMany` relationships → `hasMany()` on the model, correctly
   resolving the foreign key from the *other* side's relationship name
-- **`ManyToMany` relationships** → deterministic pivot-table migration,
-  foreign keys with cascade delete, composite primary key,
-  `belongsToMany()` on Eloquent models, and a Filament multiple searchable
-  relationship `Select`
+  (not a naming guess) - verified against a real bidirectional JDL file
+- **`ManyToMany` relationships** → a single deduped pivot table migration
+  (JDL exports the relationship on *both* sides; generating one per side
+  would produce two colliding migrations, so it's deduped by the sorted
+  table-name pair), `belongsToMany()` on both models with explicit,
+  correctly-flipped foreign key arguments on each side, and a Filament
+  multi-select (`->multiple()`) form field plus a `->badge()` table
+  column - verified against a real bidirectional `ManyToMany` JDL file
 - Dependency-ordered migrations (a referenced table always migrates
-  before the table referencing it; ManyToMany pivots are generated after
-  all entity tables)
+  before the table referencing it; pivot tables always migrate last,
+  after every entity table)
 - JDL's camelCase → Laravel's snake_case for every column/field name
 - Full Filament v5 syntax: `Schema`/`->components()`,
   `recordActions()`/`toolbarActions()`, the unified `Filament\Actions`
   namespace, `\BackedEnum|string|null $navigationIcon`
-
-## ManyToMany example
-
-Input:
-
-```jdl
-entity Student {
-  name String required
-}
-
-entity Course {
-  name String required
-}
-
-relationship ManyToMany {
-  Student{courses(name)} to Course{students(name)}
-}
-```
-
-This generates entity migrations plus a pivot migration similar to:
-
-```php
-Schema::create('course_student', function (Blueprint $table) {
-    $table->foreignId('student_id')->constrained('students')->cascadeOnDelete();
-    $table->foreignId('course_id')->constrained('courses')->cascadeOnDelete();
-    $table->primary(['student_id', 'course_id']);
-});
-```
-
-The models get:
-
-```php
-public function courses(): BelongsToMany
-{
-    return $this->belongsToMany(Course::class, 'course_student');
-}
-```
-
-and the Filament resource gets a multiple relationship-aware Select:
-
-```php
-Select::make('courses')
-    ->relationship('courses', 'name')
-    ->multiple()
-    ->searchable()
-    ->preload()
-```
-
-A sample input is available at `samples/sample_many_to_many.jdl`.
+- `jdl:scaffold` - one command running the full models → migrations →
+  migrate → Filament pipeline, parsing the JDL file only once
 
 ## Known limitations - not yet handled
 
@@ -209,20 +179,26 @@ These are open issues, good places to contribute:
 
 - **No RelationManagers** for `OneToMany` sides - e.g. an Author's edit
   page has no "Posts" tab. The `hasMany()` method exists on the model,
-  but nothing in the Filament resource surfaces it yet
+  but nothing in the Filament resource surfaces it yet. `ManyToMany` gets
+  a multi-select field instead, which covers the common case without
+  needing a RelationManager.
 - **Enum fields have no PHP-level representation** - no cast, no
   generated PHP backed enum class, no humanized Select labels (`'PAID'
   => 'PAID'` instead of `'PAID' => 'Paid'`)
-- **No single orchestrator command** - you run `jdl:migrations`,
-  `jdl:models`, and `jdl:filament` separately, in the right order, by
-  hand. A `jdl:scaffold` command that runs all three in sequence would
-  remove that footgun
 - **No automated test suite ships with the package.** Every generator
   has been manually verified against the sample `.jdl` files during
-  development, but none of that is committed as a runnable test suite yet
+  development (see "How this was built" below for what was actually
+  checked), but none of that is committed as a runnable test suite yet -
+  needed before this is trustworthy for outside contributors
+- **No `LICENSE` or `CONTRIBUTING.md` yet** - planned before this goes
+  public on GitHub
 - **Decimal precision is hardcoded** to `(10, 2)` everywhere
 - **Foreign keys are always nullable** - JDL's relationship-level
   `required` flag isn't captured yet
+- **Self-referencing relationships** (an entity related to itself, e.g.
+  a category with subcategories) haven't been tested with a real sample
+  file - the pivot-naming logic in particular likely needs adjustment
+  for a self-referencing `ManyToMany`
 
 ## How this was built
 
@@ -238,18 +214,34 @@ input before moving to the next - not just written and assumed correct:
    fresh scratch directory.
 2. **Internal model** - `Entity`/`Field`/`Relationship` objects, decoupling
    every later generator from JDL's raw JSON shape.
-3. **Migration generator** - dependency-ordered `Schema::create()` files,
-   with ManyToMany pivot migrations generated after entity tables.
-4. **Model generator** - `$fillable`, `$casts`, `belongsTo()`/`hasMany()`/
-   `belongsToMany()`.
+3. **Migration generator** - dependency-ordered `Schema::create()` files.
+   Testing a `TextBlob` field here surfaced a bug in the original type
+   map: JDL doesn't export `TextBlob` as a distinct type string at all,
+   it's `fieldType: "byte[]"` with a separate discriminator. Fixed by
+   capturing that discriminator on `Field`.
+4. **Model generator** - `$fillable`, `$casts`, `belongsTo()`/`hasMany()`.
+   The trickiest part: resolving the correct foreign key for `hasMany()`
+   from the *other* side's relationship name, verified against a real
+   bidirectional JDL file (`sample_blog.jdl`) rather than assumed correct
+   from a one-directional example.
 5. **Filament resource generator** - originally built for Filament v3,
    then updated to v5's actual API (`Schema`, `recordActions()`,
    `toolbarActions()`, the unified `Actions` namespace) after confirming
    the exact shape against Filament's own `make:filament-resource
    --generate` output, not guessed from memory.
-6. **Package restructure** (this step) - moved from "copy these files
+6. **Package restructure** - moved from "copy these files
    into your app" to a real installable Composer package: PSR-4 autoload,
    a `ServiceProvider` with command auto-registration, a publishable
    config file, and a `JdlParser` that locates its own bundled parser
    script relative to the package rather than assuming a consuming app's
+   file layout.
+7. **`ManyToMany` + orchestrator command** (this step) - checked JDL's
+   actual `ManyToMany` export shape first (a real `sample_tags.jdl` test
+   file) rather than assuming it mirrored `OneToMany`. It's exported
+   symmetrically on both sides, which is exactly the kind of thing that
+   causes a naive "generate one migration per relationship" approach to
+   emit two colliding pivot migrations - deduped by the sorted table-name
+   pair instead. Also added `jdl:scaffold`, which parses the JDL file
+   once and reuses the mapped entities across the model, migration, and
+   Filament generators, then runs `php artisan migrate` in between.
    file layout.

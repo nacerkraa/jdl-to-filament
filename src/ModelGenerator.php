@@ -11,7 +11,10 @@ class ModelGenerator
     {
     }
 
-    /** @param Entity[] $entities */
+    /**
+     * @param  Entity[]  $entities
+     * @return array<int, array{filename: string, className: string, content: string}>
+     */
     public function generate(array $entities): array
     {
         $files = [];
@@ -31,9 +34,6 @@ class ModelGenerator
     {
         $fillable = [];
         $casts = [];
-        $relationMethods = [];
-        $targetImports = [];
-        $relationImportNames = [];
 
         foreach ($entity->fields as $field) {
             $column = Naming::columnName($field->name);
@@ -45,9 +45,16 @@ class ModelGenerator
             }
         }
 
+        $relationMethods = [];
+        $targetImports = [];
+        $relationImportNames = [];
+
         foreach ($entity->relationships as $relationship) {
-            $built = $this->buildRelationshipMethod($entity, $relationship);
+            $built = $this->buildRelationshipMethod($entity->name, $relationship);
+
             if ($built === null) {
+                // Defensive only - all four JDL relationship types are
+                // handled below, this should be unreachable.
                 continue;
             }
 
@@ -58,6 +65,10 @@ class ModelGenerator
             if (in_array($relationship->type, [Relationship::MANY_TO_ONE, Relationship::ONE_TO_ONE], true)) {
                 $fillable[] = Naming::foreignKeyColumn($relationship->relationshipName);
             }
+            // ManyToOne/OneToOne add a fillable FK column above. OneToMany
+            // and ManyToMany add no column to THIS entity's own table -
+            // OneToMany's FK lives on the other entity, ManyToMany's pair
+            // of FKs live on a separate pivot table.
         }
 
         return $this->render(
@@ -70,9 +81,14 @@ class ModelGenerator
         );
     }
 
-    /** @return array{method: string, returnType: string}|null */
-    protected function buildRelationshipMethod(Entity $owner, Relationship $relationship): ?array
+    /**
+     * @return array{method: string, returnType: string}|null
+     */
+    protected function buildRelationshipMethod(string $ownEntityName, Relationship $relationship): ?array
     {
+        // JDL lowercases otherEntityName; Laravel model class names are
+        // studly case. JDL entity names are typically already valid
+        // class names once the first letter is capitalized.
         $targetClass = ucfirst($relationship->targetEntity);
 
         return match ($relationship->type) {
@@ -86,9 +102,8 @@ class ModelGenerator
             ],
             Relationship::MANY_TO_MANY => [
                 'returnType' => 'BelongsToMany',
-                'method' => $this->belongsToManyMethod($owner, $relationship, $targetClass),
+                'method' => $this->belongsToManyMethod($ownEntityName, $relationship, $targetClass),
             ],
-            default => null,
         };
     }
 
@@ -108,6 +123,13 @@ PHP;
     protected function hasManyMethod(Relationship $relationship, string $targetClass): string
     {
         $methodName = $relationship->relationshipName;
+
+        // The foreign key lives on the OTHER entity's table (the "many"
+        // side). Its base name is whatever that side called this
+        // relationship - JDL gives us that as otherEntityRelationshipName
+        // (mapped to inverseName). Falling back to this entity's own
+        // name matches Eloquent's default convention, for the rare case
+        // where JDL didn't provide an inverse name.
         $fkBase = $relationship->inverseName ?? $relationship->targetEntity;
         $fkColumn = Naming::foreignKeyColumn($fkBase);
 
@@ -119,25 +141,27 @@ PHP;
 PHP;
     }
 
-    protected function belongsToManyMethod(Entity $owner, Relationship $relationship, string $targetClass): string
+    protected function belongsToManyMethod(string $ownEntityName, Relationship $relationship, string $targetClass): string
     {
         $methodName = $relationship->relationshipName;
-        $pivotTable = Naming::pivotTableName($owner->name, $relationship->targetEntity);
+        $pivotTable = Naming::pivotTableName($ownEntityName, $relationship->targetEntity);
+        $ownColumn = Naming::pivotForeignKey($ownEntityName);
+        $targetColumn = Naming::pivotForeignKey($relationship->targetEntity);
 
         return <<<PHP
     public function {$methodName}(): BelongsToMany
     {
-        return \$this->belongsToMany({$targetClass}::class, '{$pivotTable}');
+        return \$this->belongsToMany({$targetClass}::class, '{$pivotTable}', '{$ownColumn}', '{$targetColumn}');
     }
 PHP;
     }
 
     /**
-     * @param string[] $fillable
-     * @param array<string, string> $casts
-     * @param string[] $relationMethods
-     * @param string[] $targetClasses
-     * @param string[] $relationReturnTypes
+     * @param  string[]  $fillable
+     * @param  array<string, string>  $casts
+     * @param  string[]  $relationMethods
+     * @param  string[]  $targetClasses
+     * @param  string[]  $relationReturnTypes
      */
     protected function render(
         string $className,
@@ -148,13 +172,18 @@ PHP;
         array $relationReturnTypes,
     ): string {
         $fillable = array_values(array_unique($fillable));
-        $fillableLines = implode("\n", array_map(fn ($c) => "        '{$c}',", $fillable));
+
+        $fillableLines = implode("\n", array_map(
+            fn ($c) => "        '{$c}',",
+            $fillable
+        ));
 
         $castsBlock = '';
         if (! empty($casts)) {
             $castsLines = implode("\n", array_map(
                 fn ($col, $cast) => "        '{$col}' => '{$cast}',",
-                array_keys($casts), array_values($casts)
+                array_keys($casts),
+                array_values($casts)
             ));
             $castsBlock = "\n\n    protected \$casts = [\n{$castsLines}\n    ];";
         }
@@ -169,13 +198,16 @@ PHP;
 
         $targetImportLines = implode("\n", array_map(
             fn ($t) => 'use App\\Models\\'.ucfirst($t).';',
-            array_filter($targetClasses, fn ($t) => ucfirst($t) !== $className)
+            array_filter($targetClasses, fn ($t) => ucfirst($t) !== $className) // avoid self-import
         ));
         if ($targetImportLines !== '') {
             $targetImportLines = "\n".$targetImportLines;
         }
 
-        $methodsBlock = empty($relationMethods) ? '' : "\n\n".implode("\n\n", $relationMethods);
+        $methodsBlock = '';
+        if (! empty($relationMethods)) {
+            $methodsBlock = "\n\n".implode("\n\n", $relationMethods);
+        }
 
         return <<<PHP
 <?php

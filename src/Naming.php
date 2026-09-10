@@ -35,25 +35,28 @@ class Naming
     }
 
     /**
-     * Deterministic pivot table name for a ManyToMany relationship.
-     * Sorting the two table names ensures both sides of a bidirectional
-     * relationship resolve to exactly the same pivot table.
-     * "Student" + "Course" -> "course_student"
+     * Laravel's own default ManyToMany pivot table naming convention:
+     * the two entities' singular snake_case names, sorted alphabetically,
+     * joined with an underscore. "Post" + "Tag" -> "post_tag". Matches
+     * Eloquent's own internal default guess, so belongsToMany() calls
+     * built from this need no explicit table override to work - we still
+     * pass it explicitly in generated code for clarity, not because it's
+     * required.
      */
-    public static function pivotTableName(string $firstEntity, string $secondEntity): string
+    public static function pivotTableName(string $entityA, string $entityB): string
     {
-        $tables = [self::tableName($firstEntity), self::tableName($secondEntity)];
-        sort($tables, SORT_STRING);
+        $names = [Str::snake($entityA), Str::snake($entityB)];
+        sort($names);
 
-        return implode('_', array_map(fn (string $table) => Str::singular($table), $tables));
+        return implode('_', $names);
     }
 
     /**
-     * Foreign key column used by a pivot table.
-     * "OrderItem" -> "order_item_id"
+     * The pivot column referring to one entity's own table.
+     * "Post" -> "post_id"
      */
     public static function pivotForeignKey(string $entityName): string
     {
-        return self::foreignKeyColumn(Str::singular(Str::snake($entityName)));
+        return Str::snake($entityName).'_id';
     }
 }

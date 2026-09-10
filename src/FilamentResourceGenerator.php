@@ -2,10 +2,10 @@
 
 namespace Nacer\JdlToFilament;
 
-use Illuminate\Support\Str;
 use Nacer\JdlToFilament\Models\Entity;
 use Nacer\JdlToFilament\Models\Field;
 use Nacer\JdlToFilament\Models\Relationship;
+use Illuminate\Support\Str;
 
 class FilamentResourceGenerator
 {
@@ -13,7 +13,12 @@ class FilamentResourceGenerator
     {
     }
 
-    /** @param Entity[] $entities */
+    /**
+     * @param  Entity[]  $entities
+     * @return array<int, array{relativePath: string, content: string}>
+     *         relativePath is relative to app/Filament/Resources, e.g.
+     *         "ProductResource.php" or "ProductResource/Pages/ListProducts.php"
+     */
     public function generate(array $entities): array
     {
         $byName = [];
@@ -29,32 +34,45 @@ class FilamentResourceGenerator
         return $files;
     }
 
-    /** @param array<string, Entity> $byName */
+    /**
+     * @param  array<string, Entity>  $byName
+     * @return array<int, array{relativePath: string, content: string}>
+     */
     protected function generateForEntity(Entity $entity, array $byName): array
     {
         $name = $entity->name;
         $plural = Str::plural($name);
 
-        return [
-            [
-                'relativePath' => "{$name}Resource.php",
-                'content' => $this->buildResourceContent($entity, $byName, $plural),
-            ],
-            [
-                'relativePath' => "{$name}Resource/Pages/List{$plural}.php",
-                'content' => $this->buildListPageContent($name, $plural),
-            ],
-            [
-                'relativePath' => "{$name}Resource/Pages/Create{$name}.php",
-                'content' => $this->buildCreatePageContent($name),
-            ],
-            [
-                'relativePath' => "{$name}Resource/Pages/Edit{$name}.php",
-                'content' => $this->buildEditPageContent($name),
-            ],
+        $files = [];
+
+        $files[] = [
+            'relativePath' => "{$name}Resource.php",
+            'content' => $this->buildResourceContent($entity, $byName, $plural),
         ];
+
+        $files[] = [
+            'relativePath' => "{$name}Resource/Pages/List{$plural}.php",
+            'content' => $this->buildListPageContent($name, $plural),
+        ];
+
+        $files[] = [
+            'relativePath' => "{$name}Resource/Pages/Create{$name}.php",
+            'content' => $this->buildCreatePageContent($name),
+        ];
+
+        $files[] = [
+            'relativePath' => "{$name}Resource/Pages/Edit{$name}.php",
+            'content' => $this->buildEditPageContent($name),
+        ];
+
+        return $files;
     }
 
+    /**
+     * The column used to represent a related record in a Select/table
+     * column - the target entity's first String field, or "id" if it
+     * has none (e.g. an entity made only of numbers/dates).
+     */
     protected function labelColumnFor(Entity $target): string
     {
         foreach ($target->fields as $field) {
@@ -66,7 +84,9 @@ class FilamentResourceGenerator
         return 'id';
     }
 
-    /** @param array<string, Entity> $byName */
+    /**
+     * @param  array<string, Entity>  $byName
+     */
     protected function buildResourceContent(Entity $entity, array $byName, string $plural): string
     {
         $formLines = [];
@@ -76,6 +96,7 @@ class FilamentResourceGenerator
 
         foreach ($entity->fields as $field) {
             $column = Naming::columnName($field->name);
+
             $formLines[] = $this->typeMapper->formComponentLine($field, $column);
             $formImports[$this->typeMapper->formComponentClass($field)] = true;
 
@@ -93,20 +114,33 @@ class FilamentResourceGenerator
 
             if (in_array($relationship->type, [Relationship::MANY_TO_ONE, Relationship::ONE_TO_ONE], true)) {
                 $fkColumn = Naming::foreignKeyColumn($relationship->relationshipName);
+
                 $formLines[] = "Select::make('{$fkColumn}')->relationship('{$relationship->relationshipName}', '{$labelColumn}')->searchable()->preload()";
                 $formImports['Select'] = true;
 
                 $tableLines[] = "TextColumn::make('{$relationship->relationshipName}.{$labelColumn}')->sortable()->searchable()";
                 $tableImports['TextColumn'] = true;
+
                 continue;
             }
 
             if ($relationship->type === Relationship::MANY_TO_MANY) {
-                // Laravel's relationship-aware multiple Select persists the
-                // selected IDs through the generated belongsToMany() method.
+                // The field/component name is the relationship's own
+                // name here (e.g. "tags"), not a "_id" column - there's
+                // no column on this table for a ManyToMany, the pivot
+                // table holds both foreign keys.
                 $formLines[] = "Select::make('{$relationship->relationshipName}')->relationship('{$relationship->relationshipName}', '{$labelColumn}')->multiple()->searchable()->preload()";
                 $formImports['Select'] = true;
+
+                $tableLines[] = "TextColumn::make('{$relationship->relationshipName}.{$labelColumn}')->badge()->searchable()";
+                $tableImports['TextColumn'] = true;
+
+                continue;
             }
+
+            // OneToMany relationships aren't shown on the form or table
+            // yet - see README. They'd typically use a RelationManager
+            // instead, which is a further step.
         }
 
         $formSchema = implode(",\n", array_map(fn ($l) => $this->indent($l, 16), $formLines));
@@ -116,6 +150,7 @@ class FilamentResourceGenerator
             fn ($c) => "use Filament\\Forms\\Components\\{$c};",
             array_keys($formImports)
         ));
+
         $tableImportLines = implode("\n", array_map(
             fn ($c) => "use Filament\\Tables\\Columns\\{$c};",
             array_keys($tableImports)
