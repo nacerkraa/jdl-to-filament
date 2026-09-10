@@ -8,6 +8,7 @@ use Nacer\JdlToFilament\Console\Commands\GenerateFilamentResourcesCommand;
 use Nacer\JdlToFilament\Console\Commands\GenerateMigrationsCommand;
 use Nacer\JdlToFilament\Console\Commands\GenerateModelsCommand;
 use Nacer\JdlToFilament\Console\Commands\InstallNodeCommand;
+use Nacer\JdlToFilament\Console\Commands\ScaffoldCommand;
 
 class JdlToFilamentServiceProvider extends ServiceProvider
 {
@@ -18,9 +19,7 @@ class JdlToFilamentServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
-        if (! $this->app->runningInConsole()) {
-            return;
-        }
+        if (! $this->app->runningInConsole()) return;
 
         $this->commands([
             GenerateCommand::class,
@@ -28,6 +27,7 @@ class JdlToFilamentServiceProvider extends ServiceProvider
             GenerateModelsCommand::class,
             GenerateFilamentResourcesCommand::class,
             InstallNodeCommand::class,
+            ScaffoldCommand::class,
         ]);
 
         $this->publishes([
