@@ -32,10 +32,18 @@ class EntityMapper
             $raw['relationships'] ?? []
         );
 
+        $dto = $raw['dto'] ?? 'no';
+        $service = $raw['service'] ?? 'no';
+        $pagination = $raw['pagination'] ?? 'no';
+
         return new Entity(
             name: $raw['name'],
             fields: $fields,
             relationships: $relationships,
+            paginated: $pagination !== 'no',
+            dtoType: $dto === 'no' ? null : $dto,
+            serviceType: $service === 'no' ? null : $service,
+            filterable: (bool) ($raw['jpaMetamodelFiltering'] ?? false),
         );
     }
 

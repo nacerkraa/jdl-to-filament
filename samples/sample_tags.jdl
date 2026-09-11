@@ -1,0 +1,11 @@
+entity Post {
+  title String required
+}
+
+entity Tag {
+  name String required
+}
+
+relationship ManyToMany {
+  Post{tags} to Tag{posts}
+}

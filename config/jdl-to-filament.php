@@ -20,6 +20,10 @@ return [
 
     'filament_resources_path' => 'app/Filament/Resources',
 
+    'dtos_path' => 'app/Http/Resources',
+
+    'services_path' => 'app/Services',
+
     /*
     |--------------------------------------------------------------------------
     | Node parser script

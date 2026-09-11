@@ -93,6 +93,8 @@ class FilamentResourceGenerator
         $formImports = [];
         $tableLines = [];
         $tableImports = [];
+        $filterLines = [];
+        $filterImports = [];
 
         foreach ($entity->fields as $field) {
             $column = Naming::columnName($field->name);
@@ -104,6 +106,19 @@ class FilamentResourceGenerator
             if ($tableLine !== null) {
                 $tableLines[] = $tableLine;
                 $tableImports[$this->typeMapper->tableColumnClass($field)] = true;
+            }
+
+            if ($entity->filterable) {
+                if ($field->type === 'Boolean') {
+                    $filterLines[] = "TernaryFilter::make('{$column}')";
+                    $filterImports['TernaryFilter'] = true;
+                } elseif ($field->isEnum()) {
+                    $filterLines[] = "SelectFilter::make('{$column}')->options([{$this->enumOptionsPhpArray($field)}])";
+                    $filterImports['SelectFilter'] = true;
+                }
+                // String/numeric/date fields don't get a generated filter
+                // yet - they'd need a custom Filter::make() with its own
+                // form + query closure, not just a make()/options() call.
             }
         }
 
@@ -121,6 +136,11 @@ class FilamentResourceGenerator
                 $tableLines[] = "TextColumn::make('{$relationship->relationshipName}.{$labelColumn}')->sortable()->searchable()";
                 $tableImports['TextColumn'] = true;
 
+                if ($entity->filterable) {
+                    $filterLines[] = "SelectFilter::make('{$relationship->relationshipName}')->relationship('{$relationship->relationshipName}', '{$labelColumn}')->searchable()->preload()";
+                    $filterImports['SelectFilter'] = true;
+                }
+
                 continue;
             }
 
@@ -135,6 +155,11 @@ class FilamentResourceGenerator
                 $tableLines[] = "TextColumn::make('{$relationship->relationshipName}.{$labelColumn}')->badge()->searchable()";
                 $tableImports['TextColumn'] = true;
 
+                // No filter generated for ManyToMany yet - SelectFilter
+                // doesn't have a clean built-in "has any of these" mode
+                // for a multi-relationship the way it does for a single
+                // belongsTo; would need a custom query closure.
+
                 continue;
             }
 
@@ -145,6 +170,9 @@ class FilamentResourceGenerator
 
         $formSchema = implode(",\n", array_map(fn ($l) => $this->indent($l, 16), $formLines));
         $tableColumns = implode(",\n", array_map(fn ($l) => $this->indent($l, 16), $tableLines));
+        $filtersBlock = empty($filterLines)
+            ? '                //'
+            : implode(",\n", array_map(fn ($l) => $this->indent($l, 16), $filterLines));
 
         $formImportLines = implode("\n", array_map(
             fn ($c) => "use Filament\\Forms\\Components\\{$c};",
@@ -155,6 +183,14 @@ class FilamentResourceGenerator
             fn ($c) => "use Filament\\Tables\\Columns\\{$c};",
             array_keys($tableImports)
         ));
+
+        $filterImportLines = implode("\n", array_map(
+            fn ($c) => "use Filament\\Tables\\Filters\\{$c};",
+            array_keys($filterImports)
+        ));
+        if ($filterImportLines !== '') {
+            $filterImportLines = "\n".$filterImportLines;
+        }
 
         $name = $entity->name;
 
@@ -170,7 +206,7 @@ use Filament\Actions;
 use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
 use Filament\Tables\Table;
-{$tableImportLines}
+{$tableImportLines}{$filterImportLines}
 
 class {$name}Resource extends Resource
 {
@@ -193,8 +229,9 @@ class {$name}Resource extends Resource
 {$tableColumns}
             ])
             ->filters([
-                //
+{$filtersBlock}
             ])
+            ->paginationPageOptions([10, 25, 50, 100])
             ->recordActions([
                 Actions\EditAction::make(),
             ])
@@ -223,6 +260,13 @@ class {$name}Resource extends Resource
 }
 
 PHP;
+    }
+
+    protected function enumOptionsPhpArray(Field $field): string
+    {
+        $values = array_map('trim', explode(',', (string) $field->enumValues));
+
+        return implode(', ', array_map(fn ($v) => "'{$v}' => '{$v}'", $values));
     }
 
     protected function buildListPageContent(string $name, string $plural): string

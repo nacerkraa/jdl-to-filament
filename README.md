@@ -76,25 +76,39 @@ php artisan vendor:publish --tag=jdl-to-filament-config
 ```bash
 php artisan jdl:scaffold schema.jdl
 ```
-Runs, in order: generate models → generate migrations → `php artisan migrate`
-→ generate Filament resources. The JDL file is parsed once and reused
-across all three generators. Use `--skip-migrate` to generate all the
-files without actually touching the database, and `--models-path=`,
-`--migrations-path=`, `--filament-path=` to override any of the three
-output locations for that run.
+Runs, in order: generate models → generate DTOs (entities with a JDL
+`dto` option) → generate services (entities with a JDL `service` option)
+→ generate migrations → `php artisan migrate` → generate Filament
+resources. The JDL file is parsed once and reused across every
+generator. Use `--skip-migrate` to generate all the files without
+touching the database, and `--models-path=`, `--dtos-path=`,
+`--services-path=`, `--migrations-path=`, `--filament-path=` to override
+any output location for that run.
 
 **Or run each step yourself, if you want to inspect/adjust in between:**
 ```bash
 php artisan jdl:generate schema.jdl              # inspect parsed/mapped entities (no files written)
 php artisan jdl:migrations schema.jdl [--dry]    # generate migrations
 php artisan jdl:models schema.jdl [--dry]        # generate Eloquent models
+php artisan jdl:dtos schema.jdl [--dry]          # generate API Resources for entities with a "dto" option
+php artisan jdl:services schema.jdl [--dry]      # generate Service classes for entities with a "service" option
 php artisan jdl:filament schema.jdl [--dry]      # generate Filament v5 resources
 ```
 
-Run them in that order (migrations before models before Filament) since
-each generator assumes the previous ones' conventions. `--dry` prints
-without writing, for every command except `jdl:generate` (which never
-writes files).
+`jdl:dtos` and `jdl:services` only produce output for entities that
+explicitly opted in via JDL, e.g.:
+```jdl
+paginate Product with pagination
+dto Product with mapstruct
+service Product with serviceClass
+filter Product
+```
+An entity with none of these options set gets a plain model, migration,
+and Filament resource, same as before - no DTO or service class, and no
+table filters.
+
+`--dry` prints without writing, for every command except `jdl:generate`
+(which never writes files).
 
 Default output locations (override with `--path=...` per command, or
 change the defaults via the published config):
@@ -103,6 +117,8 @@ change the defaults via the published config):
 |---|---|
 | `jdl:migrations` | `database/migrations` |
 | `jdl:models` | `app/Models` |
+| `jdl:dtos` | `app/Http/Resources` |
+| `jdl:services` | `app/Services` |
 | `jdl:filament` | `app/Filament/Resources` |
 
 ## Package structure
@@ -118,11 +134,13 @@ jdl-to-filament/
 ├── src/
 │   ├── JdlToFilamentServiceProvider.php
 │   ├── JdlParser.php                # PHP wrapper around node/parse.js
-│   ├── EntityMapper.php             # raw JDL JSON -> Entity[] objects
+│   ├── EntityMapper.php             # raw JDL JSON -> Entity[] objects (incl. pagination/dto/service/filter options)
 │   ├── Naming.php                   # shared table/column/FK/pivot naming rules
 │   ├── TypeMapper.php               # JDL field type -> migration column + Eloquent cast + Filament component
 │   ├── MigrationGenerator.php
 │   ├── ModelGenerator.php
+│   ├── DtoGenerator.php             # Laravel API Resource classes (JDL's "dto" option)
+│   ├── ServiceGenerator.php         # CRUD Service classes (JDL's "service" option)
 │   ├── FilamentResourceGenerator.php
 │   ├── Models/
 │   │   ├── Entity.php
@@ -132,14 +150,17 @@ jdl-to-filament/
 │       ├── GenerateCommand.php               # jdl:generate
 │       ├── GenerateMigrationsCommand.php     # jdl:migrations
 │       ├── GenerateModelsCommand.php         # jdl:models
+│       ├── GenerateDtosCommand.php           # jdl:dtos
+│       ├── GenerateServicesCommand.php       # jdl:services
 │       ├── GenerateFilamentResourcesCommand.php  # jdl:filament
 │       ├── InstallNodeCommand.php            # jdl:install-node
-│       └── ScaffoldCommand.php               # jdl:scaffold - runs all four in sequence
+│       └── ScaffoldCommand.php               # jdl:scaffold - runs all six in sequence
 └── samples/
-    ├── sample.jdl        # Product/Category, ManyToOne (one-directional)
-    ├── sample_enum.jdl   # Order with an enum field
-    ├── sample_blog.jdl   # Author/Post, bidirectional OneToMany <-> ManyToOne
-    └── sample_tags.jdl   # Post/Tag, ManyToMany
+    ├── sample.jdl          # Product/Category, ManyToOne (one-directional)
+    ├── sample_enum.jdl     # Order with an enum field
+    ├── sample_blog.jdl     # Author/Post, bidirectional OneToMany <-> ManyToOne
+    ├── sample_tags.jdl     # Post/Tag, ManyToMany
+    └── sample_options.jdl  # Product/Category/Warehouse - pagination, dto, service, filter options
 ```
 
 ## What's implemented
@@ -163,6 +184,34 @@ jdl-to-filament/
   correctly-flipped foreign key arguments on each side, and a Filament
   multi-select (`->multiple()`) form field plus a `->badge()` table
   column - verified against a real bidirectional `ManyToMany` JDL file
+- **Filament table filters** - only for entities with JDL's `filter`
+  option set (exported as `jpaMetamodelFiltering`): `TernaryFilter` for
+  Boolean fields, `SelectFilter` with inline options for enum fields,
+  and `SelectFilter` with `->relationship()` for `ManyToOne`/`OneToOne`
+  relationships. String/numeric/date fields don't get a generated filter
+  yet (would need a custom `Filter::make()` with its own form + query
+  closure, not just a one-line `make()`/`options()` call)
+- **Pagination page-size options** (`->paginationPageOptions([10, 25, 50,
+  100])`) on every generated table, regardless of JDL's `paginate` option
+  - Filament tables paginate by default either way, so there's no
+  on/off switch to wire up; this just gives a nicer page-size picker
+  everywhere rather than gating it behind a flag that wouldn't actually
+  change whether pagination happens
+- **DTOs** (JDL's `dto` option) → a Laravel API Resource class
+  (`App\Http\Resources\{Entity}Resource`) per opted-in entity, exposing
+  all scalar fields. A `ManyToOne`/`OneToOne` relationship nests the
+  related entity's own Resource via `whenLoaded()` *only if that target
+  entity also has a `dto` option* (referencing a Resource class that
+  doesn't exist would be a runtime error) - otherwise it falls back to
+  exposing the plain foreign key id. `OneToMany`/`ManyToMany` relationships
+  are included as a nested collection under the same condition, or
+  omitted if the target has no DTO.
+- **Services** (JDL's `service` option) → a `App\Services\{Entity}Service`
+  class per opted-in entity with `all()`/`find()`/`create()`/`update()`/
+  `delete()`, a thin wrapper around the Eloquent model. Laravel has no
+  single enforced "service layer" convention the way JHipster's Java side
+  does, so treat this as a starting point to extend/restyle for your own
+  app's conventions, not a fixed shape.
 - Dependency-ordered migrations (a referenced table always migrates
   before the table referencing it; pivot tables always migrate last,
   after every entity table)
@@ -170,8 +219,9 @@ jdl-to-filament/
 - Full Filament v5 syntax: `Schema`/`->components()`,
   `recordActions()`/`toolbarActions()`, the unified `Filament\Actions`
   namespace, `\BackedEnum|string|null $navigationIcon`
-- `jdl:scaffold` - one command running the full models → migrations →
-  migrate → Filament pipeline, parsing the JDL file only once
+- `jdl:scaffold` - one command running the full models → DTOs → services
+  → migrations → migrate → Filament pipeline, parsing the JDL file only
+  once
 
 ## Known limitations - not yet handled
 
@@ -182,6 +232,10 @@ These are open issues, good places to contribute:
   but nothing in the Filament resource surfaces it yet. `ManyToMany` gets
   a multi-select field instead, which covers the common case without
   needing a RelationManager.
+- **Filters only cover Boolean, enum, and `ManyToOne`/`OneToOne`
+  fields.** String/numeric/date fields on a filterable entity get no
+  generated filter yet - contains/range filters need a custom
+  `Filter::make()` with a form and query closure, not a one-line call.
 - **Enum fields have no PHP-level representation** - no cast, no
   generated PHP backed enum class, no humanized Select labels (`'PAID'
   => 'PAID'` instead of `'PAID' => 'Paid'`)
@@ -235,7 +289,7 @@ input before moving to the next - not just written and assumed correct:
    config file, and a `JdlParser` that locates its own bundled parser
    script relative to the package rather than assuming a consuming app's
    file layout.
-7. **`ManyToMany` + orchestrator command** (this step) - checked JDL's
+7. **`ManyToMany` + orchestrator command** - checked JDL's
    actual `ManyToMany` export shape first (a real `sample_tags.jdl` test
    file) rather than assuming it mirrored `OneToMany`. It's exported
    symmetrically on both sides, which is exactly the kind of thing that
@@ -244,4 +298,15 @@ input before moving to the next - not just written and assumed correct:
    pair instead. Also added `jdl:scaffold`, which parses the JDL file
    once and reuses the mapped entities across the model, migration, and
    Filament generators, then runs `php artisan migrate` in between.
-   file layout.
+8. **Pagination, filters, DTOs, services** (this step) - checked how JDL
+   actually exports the `paginate`/`dto`/`service`/`filter` entity options
+   before writing anything (a real `sample_options.jdl` test file), which
+   surfaced a real JHipster convention worth knowing: setting `dto`
+   without `service` auto-enables `service` too. That mattered for
+   `DtoGenerator`, which only nests a related entity's Resource class via
+   `whenLoaded()` when that target *also* has a `dto` option - otherwise
+   referencing a Resource class that was never generated would be a
+   runtime error, so it falls back to exposing the plain foreign key id
+   instead. Verified with a three-entity file where one relationship
+   target has a DTO and the other doesn't, to exercise both branches
+   rather than just the happy path.
