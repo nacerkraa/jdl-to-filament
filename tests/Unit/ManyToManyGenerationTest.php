@@ -54,6 +54,22 @@ class ManyToManyGenerationTest extends TestCase
         self::assertStringNotContainsString("TextColumn::make('tags.name')", $post);
     }
 
+    public function test_filament_generates_many_to_many_relation_managers_and_registers_them(): void
+    {
+        $files = (new FilamentResourceGenerator)->generate($this->entities());
+
+        $postResource = $files[0]['content'];
+        $postManager = collect($files)->first(fn (array $file) => str_ends_with($file['relativePath'], 'PostResource/RelationManagers/TagsRelationManager.php'))['content'];
+
+        self::assertStringContainsString('use App\\Filament\\Resources\\PostResource\\RelationManagers;', $postResource);
+        self::assertStringContainsString('RelationManagers\\TagsRelationManager::class', $postResource);
+        self::assertStringContainsString("protected static string \$relationship = 'tags';", $postManager);
+        self::assertStringContainsString('AttachAction::make()', $postManager);
+        self::assertStringContainsString('DetachAction::make()', $postManager);
+        self::assertStringContainsString('DetachBulkAction::make()', $postManager);
+        self::assertStringContainsString("TextColumn::make('name')->searchable()", $postManager);
+    }
+
     public function test_generated_php_files_are_syntactically_valid(): void
     {
         $all = array_merge(
