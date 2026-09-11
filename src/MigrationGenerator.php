@@ -7,14 +7,9 @@ use Nacer\JdlToFilament\Models\Relationship;
 
 class MigrationGenerator
 {
-    public function __construct(protected TypeMapper $typeMapper = new TypeMapper)
-    {
-    }
+    public function __construct(protected TypeMapper $typeMapper = new TypeMapper) {}
 
-    /**
-     * @param  Entity[]  $entities
-     * @return array<int, array{filename: string, table: string, content: string}>
-     */
+    /** @param Entity[] $entities */
     public function generate(array $entities): array
     {
         $ordered = $this->orderByDependency($entities);
@@ -31,8 +26,6 @@ class MigrationGenerator
             ];
         }
 
-        // Pivot migrations come after all entity tables so both foreign keys
-        // can safely reference their target tables.
         $pivotIndex = count($files);
         $generatedPivots = [];
 
@@ -45,8 +38,7 @@ class MigrationGenerator
                 $targetEntity = $this->findEntity($entities, $relationship->targetEntity);
                 if ($targetEntity === null) {
                     throw new \InvalidArgumentException(
-                        "ManyToMany relationship '{$entity->name}.{$relationship->relationshipName}' " .
-                        "references unknown entity '{$relationship->targetEntity}'."
+                        "ManyToMany relationship '{$entity->name}.{$relationship->relationshipName}' references unknown entity '{$relationship->targetEntity}'."
                     );
                 }
 
@@ -69,15 +61,8 @@ class MigrationGenerator
         return $files;
     }
 
-    protected function tableName(string $entityName): string
-    {
-        return Naming::tableName($entityName);
-    }
-
-    protected function columnName(string $fieldName): string
-    {
-        return Naming::columnName($fieldName);
-    }
+    protected function tableName(string $entityName): string { return Naming::tableName($entityName); }
+    protected function columnName(string $fieldName): string { return Naming::columnName($fieldName); }
 
     /** @param Entity[] $entities */
     protected function orderByDependency(array $entities): array
@@ -89,12 +74,9 @@ class MigrationGenerator
 
         $visited = [];
         $ordered = [];
-
         $visit = function (Entity $entity) use (&$visit, &$visited, &$ordered, $byName) {
             $key = strtolower($entity->name);
-            if (isset($visited[$key])) {
-                return;
-            }
+            if (isset($visited[$key])) return;
             $visited[$key] = true;
 
             foreach ($entity->relationships as $relationship) {
@@ -109,10 +91,7 @@ class MigrationGenerator
             $ordered[] = $entity;
         };
 
-        foreach ($entities as $entity) {
-            $visit($entity);
-        }
-
+        foreach ($entities as $entity) $visit($entity);
         return $ordered;
     }
 
@@ -120,11 +99,8 @@ class MigrationGenerator
     protected function findEntity(array $entities, string $name): ?Entity
     {
         foreach ($entities as $entity) {
-            if (strcasecmp($entity->name, $name) === 0) {
-                return $entity;
-            }
+            if (strcasecmp($entity->name, $name) === 0) return $entity;
         }
-
         return null;
     }
 
@@ -137,12 +113,15 @@ class MigrationGenerator
         }
 
         foreach ($entity->relationships as $relationship) {
-            if (in_array($relationship->type, [Relationship::MANY_TO_ONE, Relationship::ONE_TO_ONE], true)) {
-                $fkColumn = Naming::foreignKeyColumn($relationship->relationshipName);
-                $targetTable = $this->tableName($relationship->targetEntity);
-                $unique = $relationship->type === Relationship::ONE_TO_ONE ? '->unique()' : '';
-                $lines[] = "\$table->foreignId('{$fkColumn}')->nullable()->constrained('{$targetTable}'){$unique};";
+            if (! in_array($relationship->type, [Relationship::MANY_TO_ONE, Relationship::ONE_TO_ONE], true)) {
+                continue;
             }
+
+            $fkColumn = Naming::foreignKeyColumn($relationship->relationshipName);
+            $targetTable = $this->tableName($relationship->targetEntity);
+            $unique = $relationship->type === Relationship::ONE_TO_ONE ? '->unique()' : '';
+            $nullable = $relationship->required ? '' : '->nullable()';
+            $lines[] = "\$table->foreignId('{$fkColumn}'){$nullable}->constrained('{$targetTable}'){$unique};";
         }
 
         $lines[] = '$table->timestamps();';
