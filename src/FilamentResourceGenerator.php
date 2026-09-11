@@ -20,30 +20,19 @@ class FilamentResourceGenerator
     public function generate(array $entities): array
     {
         $byName = [];
-        foreach ($entities as $entity) {
-            $byName[strtolower($entity->name)] = $entity;
-        }
+        foreach ($entities as $entity) $byName[strtolower($entity->name)] = $entity;
 
         $relationFiles = $this->relationManagerGenerator->generate($entities);
         $relationsByOwner = [];
-        foreach ($relationFiles as $file) {
-            $relationsByOwner[$file['owner']][] = $file['class'];
-        }
+        foreach ($relationFiles as $file) $relationsByOwner[$file['owner']][] = $file['class'];
 
         $files = [];
         foreach ($entities as $entity) {
-            $files = array_merge($files, $this->generateForEntity(
-                $entity,
-                $byName,
-                $relationsByOwner[$entity->name] ?? []
-            ));
+            $files = array_merge($files, $this->generateForEntity($entity, $byName, $relationsByOwner[$entity->name] ?? []));
         }
 
         return array_merge($files, array_map(
-            fn (array $file) => [
-                'relativePath' => $file['relativePath'],
-                'content' => $file['content'],
-            ],
+            fn (array $file) => ['relativePath' => $file['relativePath'], 'content' => $file['content']],
             $relationFiles
         ));
     }
@@ -52,7 +41,6 @@ class FilamentResourceGenerator
     {
         $name = $entity->name;
         $plural = Str::plural($name);
-
         return [
             ['relativePath' => "{$name}Resource.php", 'content' => $this->buildResourceContent($entity, $byName, $plural, $relationManagerClasses)],
             ['relativePath' => "{$name}Resource/Pages/List{$plural}.php", 'content' => $this->buildListPageContent($name, $plural)],
@@ -66,6 +54,13 @@ class FilamentResourceGenerator
         foreach ($target->fields as $field) {
             if ($field->type === 'String') return Naming::columnName($field->name);
         }
+        return 'id';
+    }
+
+    protected function labelColumnForRelationship(Relationship $relationship, ?Entity $target): string
+    {
+        if ($target !== null) return $this->labelColumnFor($target);
+        if ($relationship->builtInEntity && strcasecmp($relationship->targetEntity, 'User') === 0) return 'name';
         return 'id';
     }
 
@@ -101,11 +96,12 @@ class FilamentResourceGenerator
 
         foreach ($entity->relationships as $relationship) {
             $target = $byName[strtolower($relationship->targetEntity)] ?? null;
-            $labelColumn = $target !== null ? $this->labelColumnFor($target) : 'id';
+            $labelColumn = $this->labelColumnForRelationship($relationship, $target);
 
             if (in_array($relationship->type, [Relationship::MANY_TO_ONE, Relationship::ONE_TO_ONE], true)) {
                 $fkColumn = Naming::foreignKeyColumn($relationship->relationshipName);
-                $formLines[] = "Select::make('{$fkColumn}')->relationship('{$relationship->relationshipName}', '{$labelColumn}')->searchable()->preload()";
+                $required = $relationship->required ? '->required()' : '';
+                $formLines[] = "Select::make('{$fkColumn}')->relationship('{$relationship->relationshipName}', '{$labelColumn}'){$required}->searchable()->preload()";
                 $formImports['Select'] = true;
                 $tableLines[] = "TextColumn::make('{$relationship->relationshipName}.{$labelColumn}')->sortable()->searchable()";
                 $tableImports['TextColumn'] = true;
@@ -132,14 +128,10 @@ class FilamentResourceGenerator
         $relationEntries = '        // No relation managers generated.';
         if (! empty($relationManagerClasses)) {
             $relationImports = "use App\\Filament\\Resources\\{$entity->name}Resource\\RelationManagers;\n";
-            $relationEntries = implode(",\n", array_map(
-                fn (string $class) => "        RelationManagers\\{$class}::class",
-                $relationManagerClasses
-            ));
+            $relationEntries = implode(",\n", array_map(fn (string $class) => "        RelationManagers\\{$class}::class", $relationManagerClasses));
         }
 
         $name = $entity->name;
-
         return <<<PHP
 <?php
 
