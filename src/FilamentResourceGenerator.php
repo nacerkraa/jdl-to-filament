@@ -9,9 +9,7 @@ use Nacer\JdlToFilament\Models\Relationship;
 
 class FilamentResourceGenerator
 {
-    public function __construct(protected TypeMapper $typeMapper = new TypeMapper)
-    {
-    }
+    public function __construct(protected TypeMapper $typeMapper = new TypeMapper) {}
 
     /** @param Entity[] $entities */
     public function generate(array $entities): array
@@ -20,90 +18,79 @@ class FilamentResourceGenerator
         foreach ($entities as $entity) {
             $byName[strtolower($entity->name)] = $entity;
         }
-
         $files = [];
         foreach ($entities as $entity) {
             $files = array_merge($files, $this->generateForEntity($entity, $byName));
         }
-
         return $files;
     }
 
-    /** @param array<string, Entity> $byName */
     protected function generateForEntity(Entity $entity, array $byName): array
     {
         $name = $entity->name;
         $plural = Str::plural($name);
-
         return [
-            [
-                'relativePath' => "{$name}Resource.php",
-                'content' => $this->buildResourceContent($entity, $byName, $plural),
-            ],
-            [
-                'relativePath' => "{$name}Resource/Pages/List{$plural}.php",
-                'content' => $this->buildListPageContent($name, $plural),
-            ],
-            [
-                'relativePath' => "{$name}Resource/Pages/Create{$name}.php",
-                'content' => $this->buildCreatePageContent($name),
-            ],
-            [
-                'relativePath' => "{$name}Resource/Pages/Edit{$name}.php",
-                'content' => $this->buildEditPageContent($name),
-            ],
+            ['relativePath' => "{$name}Resource.php", 'content' => $this->buildResourceContent($entity, $byName, $plural)],
+            ['relativePath' => "{$name}Resource/Pages/List{$plural}.php", 'content' => $this->buildListPageContent($name, $plural)],
+            ['relativePath' => "{$name}Resource/Pages/Create{$name}.php", 'content' => $this->buildCreatePageContent($name)],
+            ['relativePath' => "{$name}Resource/Pages/Edit{$name}.php", 'content' => $this->buildEditPageContent($name)],
         ];
     }
 
     protected function labelColumnFor(Entity $target): string
     {
         foreach ($target->fields as $field) {
-            if ($field->type === 'String') {
-                return Naming::columnName($field->name);
-            }
+            if ($field->type === 'String') return Naming::columnName($field->name);
         }
-
         return 'id';
     }
 
-    /** @param array<string, Entity> $byName */
     protected function buildResourceContent(Entity $entity, array $byName, string $plural): string
     {
         $formLines = [];
         $formImports = [];
         $tableLines = [];
         $tableImports = [];
+        $filterLines = [];
+        $filterImports = [];
 
         foreach ($entity->fields as $field) {
             $column = Naming::columnName($field->name);
             $formLines[] = $this->typeMapper->formComponentLine($field, $column);
             $formImports[$this->typeMapper->formComponentClass($field)] = true;
-
             $tableLine = $this->typeMapper->tableColumnLine($field, $column);
             if ($tableLine !== null) {
                 $tableLines[] = $tableLine;
                 $tableImports[$this->typeMapper->tableColumnClass($field)] = true;
             }
+
+            if ($entity->filterable) {
+                if ($field->type === 'Boolean') {
+                    $filterLines[] = "TernaryFilter::make('{$column}')";
+                    $filterImports['TernaryFilter'] = true;
+                } elseif ($field->isEnum()) {
+                    $filterLines[] = "SelectFilter::make('{$column}')->options([{$this->enumOptionsPhpArray($field)}])";
+                    $filterImports['SelectFilter'] = true;
+                }
+            }
         }
 
         foreach ($entity->relationships as $relationship) {
-            $targetKey = strtolower($relationship->targetEntity);
-            $target = $byName[$targetKey] ?? null;
+            $target = $byName[strtolower($relationship->targetEntity)] ?? null;
             $labelColumn = $target !== null ? $this->labelColumnFor($target) : 'id';
 
             if (in_array($relationship->type, [Relationship::MANY_TO_ONE, Relationship::ONE_TO_ONE], true)) {
                 $fkColumn = Naming::foreignKeyColumn($relationship->relationshipName);
                 $formLines[] = "Select::make('{$fkColumn}')->relationship('{$relationship->relationshipName}', '{$labelColumn}')->searchable()->preload()";
                 $formImports['Select'] = true;
-
                 $tableLines[] = "TextColumn::make('{$relationship->relationshipName}.{$labelColumn}')->sortable()->searchable()";
                 $tableImports['TextColumn'] = true;
-                continue;
-            }
 
-            if ($relationship->type === Relationship::MANY_TO_MANY) {
-                // Laravel's relationship-aware multiple Select persists the
-                // selected IDs through the generated belongsToMany() method.
+                if ($entity->filterable) {
+                    $filterLines[] = "SelectFilter::make('{$relationship->relationshipName}')->relationship('{$relationship->relationshipName}', '{$labelColumn}')->searchable()->preload()";
+                    $filterImports['SelectFilter'] = true;
+                }
+            } elseif ($relationship->type === Relationship::MANY_TO_MANY) {
                 $formLines[] = "Select::make('{$relationship->relationshipName}')->relationship('{$relationship->relationshipName}', '{$labelColumn}')->multiple()->searchable()->preload()";
                 $formImports['Select'] = true;
             }
@@ -111,16 +98,11 @@ class FilamentResourceGenerator
 
         $formSchema = implode(",\n", array_map(fn ($l) => $this->indent($l, 16), $formLines));
         $tableColumns = implode(",\n", array_map(fn ($l) => $this->indent($l, 16), $tableLines));
-
-        $formImportLines = implode("\n", array_map(
-            fn ($c) => "use Filament\\Forms\\Components\\{$c};",
-            array_keys($formImports)
-        ));
-        $tableImportLines = implode("\n", array_map(
-            fn ($c) => "use Filament\\Tables\\Columns\\{$c};",
-            array_keys($tableImports)
-        ));
-
+        $filtersBlock = empty($filterLines) ? '                //' : implode(",\n", array_map(fn ($l) => $this->indent($l, 16), $filterLines));
+        $formImportLines = implode("\n", array_map(fn ($c) => "use Filament\\Forms\\Components\\{$c};", array_keys($formImports)));
+        $tableImportLines = implode("\n", array_map(fn ($c) => "use Filament\\Tables\\Columns\\{$c};", array_keys($tableImports)));
+        $filterImportLines = implode("\n", array_map(fn ($c) => "use Filament\\Tables\\Filters\\{$c};", array_keys($filterImports)));
+        if ($filterImportLines !== '') $filterImportLines = "\n".$filterImportLines;
         $name = $entity->name;
 
         return <<<PHP
@@ -135,47 +117,36 @@ use Filament\Actions;
 use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
 use Filament\Tables\Table;
-{$tableImportLines}
+{$tableImportLines}{$filterImportLines}
 
 class {$name}Resource extends Resource
 {
     protected static ?string \$model = {$name}::class;
-
     protected static \BackedEnum|string|null \$navigationIcon = 'heroicon-o-rectangle-stack';
 
     public static function form(Schema \$schema): Schema
     {
-        return \$schema
-            ->components([
+        return \$schema->components([
 {$formSchema}
-            ]);
+        ]);
     }
 
     public static function table(Table \$table): Table
     {
-        return \$table
-            ->columns([
+        return \$table->columns([
 {$tableColumns}
-            ])
-            ->filters([
-                //
-            ])
-            ->recordActions([
-                Actions\EditAction::make(),
-            ])
-            ->toolbarActions([
-                Actions\BulkActionGroup::make([
-                    Actions\DeleteBulkAction::make(),
-                ]),
-            ]);
+        ])->filters([
+{$filtersBlock}
+        ])->paginationPageOptions([10, 25, 50, 100])->recordActions([
+            Actions\EditAction::make(),
+        ])->toolbarActions([
+            Actions\BulkActionGroup::make([
+                Actions\DeleteBulkAction::make(),
+            ]),
+        ]);
     }
 
-    public static function getRelations(): array
-    {
-        return [
-            //
-        ];
-    }
+    public static function getRelations(): array { return [/* */]; }
 
     public static function getPages(): array
     {
@@ -188,6 +159,12 @@ class {$name}Resource extends Resource
 }
 
 PHP;
+    }
+
+    protected function enumOptionsPhpArray(Field $field): string
+    {
+        $values = array_map('trim', explode(',', (string) $field->enumValues));
+        return implode(', ', array_map(fn ($v) => "'{$v}' => '{$v}'", $values));
     }
 
     protected function buildListPageContent(string $name, string $plural): string
@@ -204,13 +181,7 @@ use Filament\Resources\Pages\ListRecords;
 class List{$plural} extends ListRecords
 {
     protected static string \$resource = {$name}Resource::class;
-
-    protected function getHeaderActions(): array
-    {
-        return [
-            Actions\CreateAction::make(),
-        ];
-    }
+    protected function getHeaderActions(): array { return [Actions\CreateAction::make()]; }
 }
 
 PHP;
@@ -222,15 +193,9 @@ PHP;
 <?php
 
 namespace App\Filament\Resources\\{$name}Resource\Pages;
-
 use App\Filament\Resources\\{$name}Resource;
 use Filament\Resources\Pages\CreateRecord;
-
-class Create{$name} extends CreateRecord
-{
-    protected static string \$resource = {$name}Resource::class;
-}
-
+class Create{$name} extends CreateRecord { protected static string \$resource = {$name}Resource::class; }
 PHP;
     }
 
@@ -238,32 +203,21 @@ PHP;
     {
         return <<<PHP
 <?php
-
 namespace App\Filament\Resources\\{$name}Resource\Pages;
-
 use App\Filament\Resources\\{$name}Resource;
 use Filament\Actions;
 use Filament\Resources\Pages\EditRecord;
-
 class Edit{$name} extends EditRecord
 {
     protected static string \$resource = {$name}Resource::class;
-
-    protected function getHeaderActions(): array
-    {
-        return [
-            Actions\DeleteAction::make(),
-        ];
-    }
+    protected function getHeaderActions(): array { return [Actions\DeleteAction::make()]; }
 }
-
 PHP;
     }
 
     protected function indent(string $line, int $spaces): string
     {
         $pad = str_repeat(' ', $spaces);
-
         return $pad.str_replace("\n", "\n".$pad, $line);
     }
 }

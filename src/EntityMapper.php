@@ -8,34 +8,29 @@ use Nacer\JdlToFilament\Models\Relationship;
 
 class EntityMapper
 {
-    /**
-     * @param  array  $rawEntities  The "entities" array from JdlParser::parse()'s data
-     * @return Entity[]
-     */
+    /** @param array $rawEntities The entities array from JdlParser::parse() */
     public function map(array $rawEntities): array
     {
-        return array_map(
-            fn (array $rawEntity) => $this->mapEntity($rawEntity),
-            $rawEntities
-        );
+        return array_map(fn (array $rawEntity) => $this->mapEntity($rawEntity), $rawEntities);
     }
 
     protected function mapEntity(array $raw): Entity
     {
-        $fields = array_map(
-            fn (array $rawField) => $this->mapField($rawField),
-            $raw['fields'] ?? []
-        );
+        $fields = array_map(fn (array $rawField) => $this->mapField($rawField), $raw['fields'] ?? []);
+        $relationships = array_map(fn (array $rawRelationship) => $this->mapRelationship($rawRelationship), $raw['relationships'] ?? []);
 
-        $relationships = array_map(
-            fn (array $rawRelationship) => $this->mapRelationship($rawRelationship),
-            $raw['relationships'] ?? []
-        );
+        $dto = $raw['dto'] ?? 'no';
+        $service = $raw['service'] ?? 'no';
+        $pagination = $raw['pagination'] ?? 'no';
 
         return new Entity(
             name: $raw['name'],
             fields: $fields,
             relationships: $relationships,
+            paginated: $pagination !== 'no',
+            dtoType: $dto === 'no' ? null : $dto,
+            serviceType: $service === 'no' ? null : $service,
+            filterable: (bool) ($raw['jpaMetamodelFiltering'] ?? false),
         );
     }
 

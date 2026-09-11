@@ -1,0 +1,29 @@
+entity Product {
+  name String required
+  price BigDecimal required
+  inStock Boolean
+  status ProductStatus
+}
+
+entity Category {
+  name String required
+}
+
+entity Warehouse {
+  code String required
+}
+
+relationship ManyToOne {
+  Product{category} to Category
+  Product{warehouse} to Warehouse
+}
+
+enum ProductStatus {
+  DRAFT, ACTIVE, ARCHIVED
+}
+
+paginate Product with pagination
+dto Product with mapstruct
+dto Category with mapstruct
+service Product with serviceClass
+filter Product
