@@ -4,9 +4,11 @@ namespace Nacer\JdlToFilament;
 
 use Illuminate\Support\ServiceProvider;
 use Nacer\JdlToFilament\Console\Commands\GenerateCommand;
+use Nacer\JdlToFilament\Console\Commands\GenerateDtosCommand;
 use Nacer\JdlToFilament\Console\Commands\GenerateFilamentResourcesCommand;
 use Nacer\JdlToFilament\Console\Commands\GenerateMigrationsCommand;
 use Nacer\JdlToFilament\Console\Commands\GenerateModelsCommand;
+use Nacer\JdlToFilament\Console\Commands\GenerateServicesCommand;
 use Nacer\JdlToFilament\Console\Commands\InstallNodeCommand;
 use Nacer\JdlToFilament\Console\Commands\ScaffoldCommand;
 
@@ -19,13 +21,17 @@ class JdlToFilamentServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
-        if (! $this->app->runningInConsole()) return;
+        if (! $this->app->runningInConsole()) {
+            return;
+        }
 
         $this->commands([
             GenerateCommand::class,
             GenerateMigrationsCommand::class,
             GenerateModelsCommand::class,
             GenerateFilamentResourcesCommand::class,
+            GenerateDtosCommand::class,
+            GenerateServicesCommand::class,
             InstallNodeCommand::class,
             ScaffoldCommand::class,
         ]);
