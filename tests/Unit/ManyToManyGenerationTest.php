@@ -57,10 +57,17 @@ class ManyToManyGenerationTest extends TestCase
     public function test_filament_generates_many_to_many_relation_managers_and_registers_them(): void
     {
         $files = (new FilamentResourceGenerator)->generate($this->entities());
-
         $postResource = $files[0]['content'];
-        $postManager = collect($files)->first(fn (array $file) => str_ends_with($file['relativePath'], 'PostResource/RelationManagers/TagsRelationManager.php'))['content'];
+        $postManager = null;
 
+        foreach ($files as $file) {
+            if (str_ends_with($file['relativePath'], 'PostResource/RelationManagers/TagsRelationManager.php')) {
+                $postManager = $file['content'];
+                break;
+            }
+        }
+
+        self::assertNotNull($postManager);
         self::assertStringContainsString('use App\\Filament\\Resources\\PostResource\\RelationManagers;', $postResource);
         self::assertStringContainsString('RelationManagers\\TagsRelationManager::class', $postResource);
         self::assertStringContainsString("protected static string \$relationship = 'tags';", $postManager);
