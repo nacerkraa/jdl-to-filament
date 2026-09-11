@@ -3,7 +3,7 @@
 Generate Laravel migrations, Eloquent models, and Filament v5 resources directly from a [JHipster JDL](https://www.jhipster.tech/jdl/intro) file.
 
 ```text
-JDL file → migrations + models + Filament resources
+JDL file → migrations + models + DTOs + services + Filament resources
 ```
 
 ## Requirements
@@ -37,6 +37,8 @@ For individual steps:
 php artisan jdl:generate schema.jdl
 php artisan jdl:migrations schema.jdl [--dry]
 php artisan jdl:models schema.jdl [--dry]
+php artisan jdl:dtos schema.jdl [--dry]
+php artisan jdl:services schema.jdl [--dry]
 php artisan jdl:filament schema.jdl [--dry]
 ```
 
@@ -46,9 +48,27 @@ For the complete pipeline:
 php artisan jdl:scaffold schema.jdl
 ```
 
-The scaffold command parses and maps the JDL once, then generates models, migrations, and Filament resources. **It does not change the database by default.** Use `--migrate` explicitly when you want it to run `php artisan migrate` after generating the migrations.
+The scaffold command parses and maps the JDL once, then generates models, DTOs, services, migrations, optionally runs migrations, and generates Filament resources. **It does not change the database by default.** Use `--skip-migrate` to explicitly keep the database untouched; otherwise the scaffold runs `php artisan migrate` before generating Filament resources.
 
-You can override output directories for a run with `--models-path=`, `--migrations-path=`, and `--filament-path=`.
+You can override output directories with `--models-path=`, `--dtos-path=`, `--services-path=`, `--migrations-path=`, and `--filament-path=`.
+
+## JDL options
+
+The generator understands these JDL entity options:
+
+```jdl
+paginate Product with pagination
+dto Product with mapstruct
+service Product with serviceClass
+filter Product
+```
+
+- **Pagination:** generated Filament tables expose page-size options `[10, 25, 50, 100]`.
+- **DTO:** entities with `dto` generate `App\\Http\\Resources\\ProductResource`. Related resources are nested with `whenLoaded()` only when the target entity also has a DTO; otherwise the foreign-key ID is exposed for to-one relationships.
+- **Service:** entities with `service` generate `App\\Services\\ProductService` with basic `all`, `find`, `create`, `update`, and `delete` methods.
+- **Filter:** entities with JDL `filter` get generated Filament filters for Boolean, enum, and to-one relationships. More advanced string/numeric/date filters are still a future extension.
+
+A runnable example is available at `samples/sample_options.jdl`.
 
 ## What's implemented
 
@@ -60,9 +80,10 @@ You can override output directories for a run with `--models-path=`, `--migratio
 - Filament ManyToMany multi-select fields using `->multiple()->searchable()->preload()`
 - Dependency-ordered entity migrations and pivot migrations generated after all entity tables
 - Shared snake_case naming rules for tables, columns, foreign keys, and pivots
+- JDL pagination, DTO, service, and filter options
 - Configurable output paths
 - `jdl:scaffold` for a single end-to-end generation workflow
-- Automated unit tests for naming, ManyToMany generation, and generated PHP syntax
+- Automated unit tests for naming, ManyToMany generation, JDL options, and generated PHP syntax
 
 ## ManyToMany example
 
@@ -90,31 +111,31 @@ return $this->belongsToMany(Tag::class, 'post_tag', 'post_id', 'tag_id');
 return $this->belongsToMany(Post::class, 'post_tag', 'tag_id', 'post_id');
 ```
 
-The Filament form gets a relationship-aware multiple select. ManyToMany relationships are intentionally not emitted as a `TextColumn` relationship path because a collection-valued relationship is not a scalar table column; a RelationManager is a better future extension for richer table/edit-page management.
-
-A runnable input is available at `samples/sample_tags.jdl`.
+ManyToMany relationships get a relationship-aware multiple select in Filament. They are intentionally not emitted as a scalar `TextColumn`; a RelationManager is a better future extension for richer table/edit-page management.
 
 ## Testing
-
-Install development dependencies and run:
 
 ```bash
 composer install
 composer test
 ```
 
-The CI workflow runs the unit suite on supported PHP versions. Generated model and migration source is also checked with `php -l` in the tests.
+The CI workflow runs the unit suite on PHP 8.3 and 8.4. Generated model and migration source is also checked with `php -l` in the tests.
 
-For full integration validation, run the scaffold command in a real Laravel + Filament application and use `php artisan migrate` (or `jdl:scaffold --migrate`) against a disposable test database.
+Full integration validation should be run in a real Laravel + Filament application against a disposable database.
 
-## Known limitations
+## Known limitations / next work
 
-- No Filament RelationManagers yet for OneToMany or richer ManyToMany editing
-- Enum fields do not generate PHP backed enum classes yet
-- Foreign keys are currently nullable because relationship-level `required` is not yet captured
-- Decimal precision is currently fixed at `(10, 2)`
-- Self-referencing relationships need dedicated coverage
-- The package is not yet published to Packagist
+- **Filament RelationManagers:** not generated yet for OneToMany or richer ManyToMany management.
+- **Advanced filters:** string contains, numeric ranges, date ranges, and multi-value relationship filters need custom Filament query filters.
+- **PHP enums:** enum fields do not generate PHP backed enum classes or casts; labels are not humanized.
+- **Required relationships:** relationship-level `required` is not yet captured, so generated foreign keys are nullable.
+- **Decimal precision:** currently fixed at `(10, 2)`.
+- **Self-referencing relationships:** need dedicated handling/tests, especially self-referencing ManyToMany pivots.
+- **Multiple M2M relations between the same entity pair:** the current deterministic pair-based pivot name can collide; a relation-aware naming strategy is needed.
+- **Generated-code customization:** no templates/hooks yet for projects that need conventions different from the built-in output.
+- **Integration test application:** the package tests generation, but a disposable Laravel + Filament fixture app is still needed to validate generated code at runtime.
+- **Packagist/release automation:** package is not yet published as a stable release with a versioning/release workflow.
 
 ## Project structure
 
@@ -130,12 +151,16 @@ jdl-to-filament/
 │   ├── TypeMapper.php
 │   ├── MigrationGenerator.php
 │   ├── ModelGenerator.php
+│   ├── DtoGenerator.php
+│   ├── ServiceGenerator.php
 │   ├── FilamentResourceGenerator.php
 │   ├── Models/
 │   └── Console/Commands/
 │       ├── GenerateCommand.php
 │       ├── GenerateMigrationsCommand.php
 │       ├── GenerateModelsCommand.php
+│       ├── GenerateDtosCommand.php
+│       ├── GenerateServicesCommand.php
 │       ├── GenerateFilamentResourcesCommand.php
 │       ├── InstallNodeCommand.php
 │       └── ScaffoldCommand.php
