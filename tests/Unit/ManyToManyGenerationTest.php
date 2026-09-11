@@ -77,6 +77,35 @@ class ManyToManyGenerationTest extends TestCase
         self::assertStringContainsString("TextColumn::make('name')->searchable()", $postManager);
     }
 
+    public function test_filament_generates_one_to_many_relation_manager_with_create_edit_and_delete(): void
+    {
+        $category = new Entity('Category', [new Field('name', 'String', true)], [
+            new Relationship(Relationship::ONE_TO_MANY, 'Post', 'posts', 'category'),
+        ]);
+        $post = new Entity('Post', [new Field('title', 'String', true)], [
+            new Relationship(Relationship::MANY_TO_ONE, 'Category', 'category', 'posts'),
+        ]);
+
+        $files = (new FilamentResourceGenerator)->generate([$category, $post]);
+        $categoryResource = $files[0]['content'];
+        $manager = null;
+
+        foreach ($files as $file) {
+            if (str_ends_with($file['relativePath'], 'CategoryResource/RelationManagers/PostsRelationManager.php')) {
+                $manager = $file['content'];
+                break;
+            }
+        }
+
+        self::assertNotNull($manager);
+        self::assertStringContainsString('RelationManagers\\PostsRelationManager::class', $categoryResource);
+        self::assertStringContainsString("protected static string \$relationship = 'posts';", $manager);
+        self::assertStringContainsString('CreateAction::make()', $manager);
+        self::assertStringContainsString('EditAction::make()', $manager);
+        self::assertStringContainsString('DeleteAction::make()', $manager);
+        self::assertStringNotContainsString("Select::make('category_id')", $manager);
+    }
+
     public function test_generated_php_files_are_syntactically_valid(): void
     {
         $all = array_merge(
