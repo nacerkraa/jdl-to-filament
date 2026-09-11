@@ -9,7 +9,12 @@ use Nacer\JdlToFilament\Models\Relationship;
 
 class FilamentResourceGenerator
 {
-    public function __construct(protected TypeMapper $typeMapper = new TypeMapper) {}
+    protected FilamentRelationManagerGenerator $relationManagerGenerator;
+
+    public function __construct(protected TypeMapper $typeMapper = new TypeMapper)
+    {
+        $this->relationManagerGenerator = new FilamentRelationManagerGenerator($typeMapper);
+    }
 
     /** @param Entity[] $entities */
     public function generate(array $entities): array
@@ -18,19 +23,38 @@ class FilamentResourceGenerator
         foreach ($entities as $entity) {
             $byName[strtolower($entity->name)] = $entity;
         }
+
+        $relationFiles = $this->relationManagerGenerator->generate($entities);
+        $relationsByOwner = [];
+        foreach ($relationFiles as $file) {
+            $relationsByOwner[$file['owner']][] = $file['class'];
+        }
+
         $files = [];
         foreach ($entities as $entity) {
-            $files = array_merge($files, $this->generateForEntity($entity, $byName));
+            $files = array_merge($files, $this->generateForEntity(
+                $entity,
+                $byName,
+                $relationsByOwner[$entity->name] ?? []
+            ));
         }
-        return $files;
+
+        return array_merge($files, array_map(
+            fn (array $file) => [
+                'relativePath' => $file['relativePath'],
+                'content' => $file['content'],
+            ],
+            $relationFiles
+        ));
     }
 
-    protected function generateForEntity(Entity $entity, array $byName): array
+    protected function generateForEntity(Entity $entity, array $byName, array $relationManagerClasses = []): array
     {
         $name = $entity->name;
         $plural = Str::plural($name);
+
         return [
-            ['relativePath' => "{$name}Resource.php", 'content' => $this->buildResourceContent($entity, $byName, $plural)],
+            ['relativePath' => "{$name}Resource.php", 'content' => $this->buildResourceContent($entity, $byName, $plural, $relationManagerClasses)],
             ['relativePath' => "{$name}Resource/Pages/List{$plural}.php", 'content' => $this->buildListPageContent($name, $plural)],
             ['relativePath' => "{$name}Resource/Pages/Create{$name}.php", 'content' => $this->buildCreatePageContent($name)],
             ['relativePath' => "{$name}Resource/Pages/Edit{$name}.php", 'content' => $this->buildEditPageContent($name)],
@@ -45,7 +69,7 @@ class FilamentResourceGenerator
         return 'id';
     }
 
-    protected function buildResourceContent(Entity $entity, array $byName, string $plural): string
+    protected function buildResourceContent(Entity $entity, array $byName, string $plural, array $relationManagerClasses = []): string
     {
         $formLines = [];
         $formImports = [];
@@ -103,6 +127,17 @@ class FilamentResourceGenerator
         $tableImportLines = implode("\n", array_map(fn ($c) => "use Filament\\Tables\\Columns\\{$c};", array_keys($tableImports)));
         $filterImportLines = implode("\n", array_map(fn ($c) => "use Filament\\Tables\\Filters\\{$c};", array_keys($filterImports)));
         if ($filterImportLines !== '') $filterImportLines = "\n".$filterImportLines;
+
+        $relationImports = '';
+        $relationEntries = '        // No relation managers generated.';
+        if (! empty($relationManagerClasses)) {
+            $relationImports = "use App\\Filament\\Resources\\{$entity->name}Resource\\RelationManagers;\n";
+            $relationEntries = implode(",\n", array_map(
+                fn (string $class) => "        RelationManagers\\{$class}::class",
+                $relationManagerClasses
+            ));
+        }
+
         $name = $entity->name;
 
         return <<<PHP
@@ -112,7 +147,7 @@ namespace App\Filament\Resources;
 
 use App\Filament\Resources\\{$name}Resource\Pages;
 use App\Models\\{$name};
-use Filament\Actions;
+{$relationImports}use Filament\Actions;
 {$formImportLines}
 use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
@@ -146,7 +181,12 @@ class {$name}Resource extends Resource
         ]);
     }
 
-    public static function getRelations(): array { return [/* */]; }
+    public static function getRelations(): array
+    {
+        return [
+{$relationEntries}
+        ];
+    }
 
     public static function getPages(): array
     {
