@@ -15,9 +15,13 @@ class FilamentResourceGenerator
     public function generate(array $entities): array
     {
         $byName = [];
-        foreach ($entities as $entity) $byName[strtolower($entity->name)] = $entity;
+        foreach ($entities as $entity) {
+            $byName[strtolower($entity->name)] = $entity;
+        }
         $files = [];
-        foreach ($entities as $entity) $files = array_merge($files, $this->generateForEntity($entity, $byName));
+        foreach ($entities as $entity) {
+            $files = array_merge($files, $this->generateForEntity($entity, $byName));
+        }
         return $files;
     }
 
@@ -47,6 +51,8 @@ class FilamentResourceGenerator
         $formImports = [];
         $tableLines = [];
         $tableImports = [];
+        $filterLines = [];
+        $filterImports = [];
 
         foreach ($entity->fields as $field) {
             $column = Naming::columnName($field->name);
@@ -56,6 +62,16 @@ class FilamentResourceGenerator
             if ($tableLine !== null) {
                 $tableLines[] = $tableLine;
                 $tableImports[$this->typeMapper->tableColumnClass($field)] = true;
+            }
+
+            if ($entity->filterable) {
+                if ($field->type === 'Boolean') {
+                    $filterLines[] = "TernaryFilter::make('{$column}')";
+                    $filterImports['TernaryFilter'] = true;
+                } elseif ($field->isEnum()) {
+                    $filterLines[] = "SelectFilter::make('{$column}')->options([{$this->enumOptionsPhpArray($field)}])";
+                    $filterImports['SelectFilter'] = true;
+                }
             }
         }
 
@@ -69,6 +85,11 @@ class FilamentResourceGenerator
                 $formImports['Select'] = true;
                 $tableLines[] = "TextColumn::make('{$relationship->relationshipName}.{$labelColumn}')->sortable()->searchable()";
                 $tableImports['TextColumn'] = true;
+
+                if ($entity->filterable) {
+                    $filterLines[] = "SelectFilter::make('{$relationship->relationshipName}')->relationship('{$relationship->relationshipName}', '{$labelColumn}')->searchable()->preload()";
+                    $filterImports['SelectFilter'] = true;
+                }
             } elseif ($relationship->type === Relationship::MANY_TO_MANY) {
                 $formLines[] = "Select::make('{$relationship->relationshipName}')->relationship('{$relationship->relationshipName}', '{$labelColumn}')->multiple()->searchable()->preload()";
                 $formImports['Select'] = true;
@@ -77,8 +98,11 @@ class FilamentResourceGenerator
 
         $formSchema = implode(",\n", array_map(fn ($l) => $this->indent($l, 16), $formLines));
         $tableColumns = implode(",\n", array_map(fn ($l) => $this->indent($l, 16), $tableLines));
+        $filtersBlock = empty($filterLines) ? '                //' : implode(",\n", array_map(fn ($l) => $this->indent($l, 16), $filterLines));
         $formImportLines = implode("\n", array_map(fn ($c) => "use Filament\\Forms\\Components\\{$c};", array_keys($formImports)));
         $tableImportLines = implode("\n", array_map(fn ($c) => "use Filament\\Tables\\Columns\\{$c};", array_keys($tableImports)));
+        $filterImportLines = implode("\n", array_map(fn ($c) => "use Filament\\Tables\\Filters\\{$c};", array_keys($filterImports)));
+        if ($filterImportLines !== '') $filterImportLines = "\n".$filterImportLines;
         $name = $entity->name;
 
         return <<<PHP
@@ -93,7 +117,7 @@ use Filament\Actions;
 use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
 use Filament\Tables\Table;
-{$tableImportLines}
+{$tableImportLines}{$filterImportLines}
 
 class {$name}Resource extends Resource
 {
@@ -112,8 +136,8 @@ class {$name}Resource extends Resource
         return \$table->columns([
 {$tableColumns}
         ])->filters([
-            //
-        ])->recordActions([
+{$filtersBlock}
+        ])->paginationPageOptions([10, 25, 50, 100])->recordActions([
             Actions\EditAction::make(),
         ])->toolbarActions([
             Actions\BulkActionGroup::make([
@@ -122,12 +146,7 @@ class {$name}Resource extends Resource
         ]);
     }
 
-    public static function getRelations(): array
-    {
-        return [
-            //
-        ];
-    }
+    public static function getRelations(): array { return [/* */]; }
 
     public static function getPages(): array
     {
@@ -140,6 +159,12 @@ class {$name}Resource extends Resource
 }
 
 PHP;
+    }
+
+    protected function enumOptionsPhpArray(Field $field): string
+    {
+        $values = array_map('trim', explode(',', (string) $field->enumValues));
+        return implode(', ', array_map(fn ($v) => "'{$v}' => '{$v}'", $values));
     }
 
     protected function buildListPageContent(string $name, string $plural): string
@@ -166,6 +191,7 @@ PHP;
     {
         return <<<PHP
 <?php
+
 namespace App\Filament\Resources\\{$name}Resource\Pages;
 use App\Filament\Resources\\{$name}Resource;
 use Filament\Resources\Pages\CreateRecord;
